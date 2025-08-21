@@ -6,31 +6,36 @@ on:
 jobs:
   mac:
     runs-on: macos-14
-    timeout-minutes: 360   # hard cap ~6 hours
+    timeout-minutes: 360
     steps:
       - name: Runner info
+        shell: bash
         run: |
           sw_vers
           whoami
           echo "Home: $HOME"
 
       - name: Install ngrok
+        shell: bash
         run: |
           brew update
           brew install --cask ngrok
 
       - name: Auth ngrok
+        shell: bash
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
           ngrok config add-authtoken "$NGROK_AUTHTOKEN"
 
-      - name: Enable Screen Sharing (VNC) + set password
+      - name: Enable Screen Sharing (VNC) and set password
+        shell: bash
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
           set -euxo pipefail
-          # Enable Remote Management and VNC legacy with a password
+
+          # Enable Remote Management + VNC legacy with password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on \
             -clientopts -setvnclegacy -vnclegacy yes \
@@ -40,39 +45,42 @@ jobs:
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
 
-          # Make sure Screen Sharing (VNC) service is running
+          # Ensure the Screen Sharing service is running (port 5900)
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist || true
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
 
-          echo "VNC is enabled on port 5900"
-
       - name: Start ngrok TCP tunnel to 5900
+        shell: bash
         run: |
-          # Start tunnel in background
+          # Start ngrok in the background
           nohup ngrok tcp 5900 --log stdout > ngrok.log 2>&1 &
-          # Wait for the local API to come up
-          for i in {1..20}; do
-            if curl -s http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then break; fi
+
+          # Wait for the local ngrok API to be ready
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then
+              break
+            fi
             sleep 1
           done
-          # Grab the public tcp address (looks like tcp://0.tcp.ngrok.io:xxxxx)
-          TUNNEL=$(curl --silent http://127.0.0.1:4040/api/tunnels | /usr/bin/python3 - "$@" << 'PY'
-import sys, json
-data=json.load(sys.stdin)
-t=[t for t in data.get("tunnels",[]) if t.get("proto")=="tcp"]
-print(t[0]["public_url"] if t else "")
-PY
-)
-          echo "TUNNEL=$TUNNEL" | tee -a $GITHUB_ENV
-          echo "### VNC Connection" >> $GITHUB_STEP_SUMMARY
-          echo "- Address: **$TUNNEL**" >> $GITHUB_STEP_SUMMARY
-          echo "- Password: **(your repo secret VNC_PASSWORD)**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> Use any VNC client on Windows (e.g., RealVNC Viewer). Paste the address exactly as shown."
+
+          # Extract the tcp public_url without using heredocs
+          TUNNEL=$(curl -s http://127.0.0.1:4040/api/tunnels | /usr/bin/python3 -c "import sys,json; d=json.load(sys.stdin); print(next((t['public_url'] for t in d.get('tunnels',[]) if t.get('proto')=='tcp'),''))")
+          echo "TUNNEL=$TUNNEL" | tee -a "$GITHUB_ENV"
+
+          echo "### VNC Connection" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Address: **$TUNNEL**" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Password: **(your VNC_PASSWORD secret)**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Use a VNC client (e.g., RealVNC Viewer) and paste the address exactly."
 
       - name: Keep alive up to 6 hours
+        shell: bash
         run: |
           echo "Tunnel: $TUNNEL"
-          echo "Keeping the session alive (CTRL+C to stop if running locally)."
           # 6 hours = 21600 seconds
-          i=0; while [ $i -lt 21600 ]; do i=$((i+60)); sleep 60; echo "alive $i s"; done
+          i=0
+          while [ $i -lt 21600 ]; do
+            i=$((i+60))
+            sleep 60
+            echo "alive $i s"
+          done
