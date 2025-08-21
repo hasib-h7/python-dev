@@ -1,24 +1,60 @@
-name: MacRDP
-on: 
+name: MacOS GUI via tmate (no ngrok)
+
+on:
   workflow_dispatch:
+
 jobs:
-  build:
-    name: MacRDP
-    runs-on: macos-latest
-    
-    steps:                 
-    - name: Enabling Remote Access
-      env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-      run: |
-          curl -s -o start.sh -L "https://raw.githubusercontent.com/JohnnyNetsec/github-vm/main/mac/start.sh"
-          chmod +x start.sh
-          bash start.sh "$NGROK_AUTH_TOKEN"
-          
-    - name: Log In Details To VNC Server
-      run: |
-         chmod +x login.sh
-         bash login.sh
-         
-    - name: MacOS System running...
-      uses: mxschmitt/action-tmate@v2
+  mac:
+    runs-on: macos-14   # or macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Show usage instructions (read this in the Summary)
+        run: |
+          echo "### How to connect (no ngrok)" >> \"$GITHUB_STEP_SUMMARY\"
+          echo \"1) Wait for the **tmate** step to print an SSH command like: \\\`ssh <token>@sfo2.tmate.io\\\`\" >> \"$GITHUB_STEP_SUMMARY\"
+          echo \"2) On your Windows PC, open **PowerShell** and run (note the -L forward):\" >> \"$GITHUB_STEP_SUMMARY\"
+          echo '' >> \"$GITHUB_STEP_SUMMARY\"
+          echo '   ssh -L 5900:localhost:5900 <token>@sfo2.tmate.io' >> \"$GITHUB_STEP_SUMMARY\"
+          echo '' >> \"$GITHUB_STEP_SUMMARY\"
+          echo \"3) Keep that SSH window **open**.\" >> \"$GITHUB_STEP_SUMMARY\"
+          echo \"4) Open your VNC viewer (RealVNC/TightVNC) and connect to **127.0.0.1:5900**\" >> \"$GITHUB_STEP_SUMMARY\"
+          echo \"5) Use the VNC password you set in the repo secret **VNC_PASSWORD**.\" >> \"$GITHUB_STEP_SUMMARY\"
+          echo '' >> \"$GITHUB_STEP_SUMMARY\"
+          echo \"> PuTTY users: Session→Host \\\"sfo2.tmate.io\\\"; SSH→Tunnels→ Source 5900, Destination localhost:5900, Add → Open. When prompted for user, paste the full token before @sfo2.tmate.io.\" >> \"$GITHUB_STEP_SUMMARY\"
+
+      - name: Enable Screen Sharing (VNC) and set password
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # Enable Apple Remote Desktop (RemoteManagement) + allow all users + full privs
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -clientopts -setmenuextra -menuextra yes \
+            -configure -allowAccessFor -allUsers -privs -all
+
+          # Set VNC password
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
+
+          # Ensure Screen Sharing service is running on 5900
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist || true
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
+
+          # Quick check (optional): confirm port 5900 is in LISTEN
+          lsof -nP -iTCP:5900 || true
+
+          echo "### VNC is enabled on port 5900" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Password is the secret you set in **VNC_PASSWORD**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start tmate for tunneling (SSH port-forward)
+        uses: mxschmitt/action-tmate@v2
+        with:
+          limit-access-to-actor: true
+        # Note: This step prints an SSH command in the logs, e.g.:
+        # ssh <token>@sfo2.tmate.io
+        # Use it with: ssh -L 5900:localhost:5900 <token>@sfo2.tmate.io
