@@ -1,24 +1,78 @@
-name: MacRDP
-on: 
+name: macOS GUI (Temporary VNC)
+
+on:
   workflow_dispatch:
+
 jobs:
-  build:
-    name: MacRDP
-    runs-on: macos-latest
-    
-    steps:                 
-    - name: Enabling Remote Access
-      env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-      run: |
-          curl -s -o start.sh -L "https://raw.githubusercontent.com/JohnnyNetsec/github-vm/main/mac/start.sh"
-          chmod +x start.sh
-          bash start.sh "$NGROK_AUTH_TOKEN"
-          
-    - name: Log In Details To VNC Server
-      run: |
-         chmod +x login.sh
-         bash login.sh
-         
-    - name: MacOS System running...
-      uses: mxschmitt/action-tmate@v2
+  mac:
+    runs-on: macos-14
+    timeout-minutes: 360   # hard cap ~6 hours
+    steps:
+      - name: Runner info
+        run: |
+          sw_vers
+          whoami
+          echo "Home: $HOME"
+
+      - name: Install ngrok
+        run: |
+          brew update
+          brew install --cask ngrok
+
+      - name: Auth ngrok
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+
+      - name: Enable Screen Sharing (VNC) + set password
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          set -euxo pipefail
+          # Enable Remote Management and VNC legacy with a password
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -clientopts -setmenuextra -menuextra yes \
+            -configure -allowAccessFor -allUsers -privs -all
+
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
+
+          # Make sure Screen Sharing (VNC) service is running
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist || true
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
+
+          echo "VNC is enabled on port 5900"
+
+      - name: Start ngrok TCP tunnel to 5900
+        run: |
+          # Start tunnel in background
+          nohup ngrok tcp 5900 --log stdout > ngrok.log 2>&1 &
+          # Wait for the local API to come up
+          for i in {1..20}; do
+            if curl -s http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          # Grab the public tcp address (looks like tcp://0.tcp.ngrok.io:xxxxx)
+          TUNNEL=$(curl --silent http://127.0.0.1:4040/api/tunnels | /usr/bin/python3 - "$@" << 'PY'
+import sys, json
+data=json.load(sys.stdin)
+t=[t for t in data.get("tunnels",[]) if t.get("proto")=="tcp"]
+print(t[0]["public_url"] if t else "")
+PY
+)
+          echo "TUNNEL=$TUNNEL" | tee -a $GITHUB_ENV
+          echo "### VNC Connection" >> $GITHUB_STEP_SUMMARY
+          echo "- Address: **$TUNNEL**" >> $GITHUB_STEP_SUMMARY
+          echo "- Password: **(your repo secret VNC_PASSWORD)**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Use any VNC client on Windows (e.g., RealVNC Viewer). Paste the address exactly as shown."
+
+      - name: Keep alive up to 6 hours
+        run: |
+          echo "Tunnel: $TUNNEL"
+          echo "Keeping the session alive (CTRL+C to stop if running locally)."
+          # 6 hours = 21600 seconds
+          i=0; while [ $i -lt 21600 ]; do i=$((i+60)); sleep 60; echo "alive $i s"; done
