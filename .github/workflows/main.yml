@@ -1,4 +1,4 @@
-name: MacOS GUI via tmate (no ngrok)
+name: MacOS GUI via tmate (hardcoded password)
 
 on:
   workflow_dispatch:
@@ -9,69 +9,49 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Show usage instructions (read in the Summary)
+      - name: Instructions (see this in Summary)
         shell: bash
         run: |
-          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-            {
-              echo "### How to connect (no ngrok)"
-              echo "1) Wait for the **tmate** step to print an SSH command like:"
-              echo "   \`ssh <token>@sfo2.tmate.io\`"
-              echo ""
-              echo "2) On your Windows PC, run this (adds local port forward):"
-              echo "   \`ssh -L 5900:localhost:5900 <token>@sfo2.tmate.io\`"
-              echo ""
-              echo "3) Keep that SSH window **open**."
-              echo "4) Open your VNC client and connect to **127.0.0.1:5900**"
-              echo "5) Use the VNC password stored in your repo secret **VNC_PASSWORD**."
-              echo ""
-              echo "> PuTTY: Session→Host `sfo2.tmate.io`; SSH→Tunnels→ Source 5900, Destination localhost:5900, Add → Open."
-              echo "> When prompted for user, paste the full token before @sfo2.tmate.io."
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "GITHUB_STEP_SUMMARY is not set; printing instructions to log:"
-            echo "ssh -L 5900:localhost:5900 <token>@sfo2.tmate.io"
-          fi
+          {
+            echo "### How to connect"
+            echo "1) Wait for the **tmate** step to print an SSH command like:"
+            echo "   \`ssh <token>@sfo2.tmate.io\`"
+            echo ""
+            echo "2) On your Windows PC, run this (adds port forward):"
+            echo "   \`ssh -L 5900:localhost:5900 <token>@sfo2.tmate.io\`"
+            echo ""
+            echo "3) Keep that SSH window open."
+            echo "4) Open your VNC client and connect to **127.0.0.1:5900**"
+            echo "5) Use password: **macos123**"
+            echo ""
+            echo "> Reminder: macOS VNC only supports legacy 8-char passwords."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enable Screen Sharing (VNC) and set password
+      - name: Enable VNC with hardcoded password
         shell: bash
-        env:
-          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
           set -euxo pipefail
 
-          # Enable Apple Remote Desktop + allow all users + full privileges
+          VNC_PASSWORD="macos123"
+
+          # Enable Apple Remote Desktop + VNC legacy
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on \
             -clientopts -setvnclegacy -vnclegacy yes \
             -clientopts -setmenuextra -menuextra yes \
             -configure -allowAccessFor -allUsers -privs -all
 
-          # Set VNC password
+          # Set VNC password (must be ≤ 8 chars)
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
 
-          # Ensure Screen Sharing service (5900) is running
+          # Ensure Screen Sharing is running
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist || true
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
 
-          # Optional: check listener
-          lsof -nP -iTCP:5900 || true
+          echo "VNC password set to: $VNC_PASSWORD"
 
-          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-            {
-              echo "### VNC status"
-              echo "- Screen Sharing is enabled on **port 5900**"
-              echo "- Password comes from your secret **VNC_PASSWORD**"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Start tmate for tunneling (SSH port-forward)
+      - name: Start tmate for tunneling
         uses: mxschmitt/action-tmate@v2
         with:
-          # Only the workflow triggerer can join the session
           limit-access-to-actor: true
-        # When this step runs, it will print something like:
-        #   ssh <token>@sfo2.tmate.io
-        # Use that command with port-forwarding added:
-        #   ssh -L 5900:localhost:5900 <token>@sfo2.tmate.io
